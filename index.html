@@ -1,0 +1,574 @@
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta charset="utf-8">
+<title>Robot</title>
+<style>
+  :root {
+    --ground: #0d1030;
+    --ground-2: #141a45;
+    --glow: #5ff0d8;
+    --dim: #6b7bb8;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--ground);
+    font-family: ui-rounded, "SF Pro Rounded", "Segoe UI", system-ui, sans-serif;
+    color: var(--dim);
+    user-select: none;
+  }
+  body { display: flex; flex-direction: column; }
+
+  /* ---------- the face ---------- */
+  #face {
+    flex: 1; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    gap: 11vmin;
+    background: radial-gradient(ellipse at 50% 45%, var(--ground-2) 0%, var(--ground) 70%);
+    transition: background 600ms ease;
+  }
+  .eye {
+    width: 22vmin; height: 30vmin;
+    background: var(--glow);
+    border-radius: 6vmin;
+    box-shadow: 0 0 6vmin color-mix(in srgb, var(--glow) 55%, transparent),
+                0 0 16vmin color-mix(in srgb, var(--glow) 25%, transparent);
+    transition: height 180ms ease, width 260ms ease, border-radius 260ms ease,
+                transform 320ms cubic-bezier(.34,1.4,.64,1), background 500ms ease,
+                box-shadow 500ms ease, opacity 200ms ease;
+    will-change: transform, height;
+  }
+
+  /* blink */
+  #face.blink .eye { height: 2.2vmin; border-radius: 1.1vmin; transition: height 90ms ease; }
+
+  /* moods */
+  #face.happy .eye {
+    height: 13vmin;
+    border-radius: 11vmin 11vmin 1.5vmin 1.5vmin;
+    transform: translateY(-2vmin);
+  }
+  #face.excited { --glow: #a9ff7a; }
+  #face.excited .eye { width: 26vmin; height: 26vmin; border-radius: 50%; }
+  #face.thinking { --glow: #ffc95c; }
+  #face.thinking .eye { height: 22vmin; transform: translate(2.5vmin, -3vmin); }
+  #face.thinking .eye.left { height: 9vmin; }
+  #face.listening { --glow: #78e4ff; }
+  #face.listening .eye { width: 24vmin; height: 33vmin; }
+  #face.talking .eye { animation: chat 340ms ease-in-out infinite alternate; }
+  #face.confused { --glow: #c79bff; }
+  #face.confused .eye.left  { height: 10vmin; transform: rotate(-9deg) translateY(2vmin); }
+  #face.confused .eye.right { height: 30vmin; transform: rotate(6deg); }
+  #face.sad { --glow: #5f86d6; }
+  #face.sad .eye { height: 18vmin; opacity: .75; }
+  #face.sad .eye.left  { transform: rotate(13deg) translateY(3vmin); }
+  #face.sad .eye.right { transform: rotate(-13deg) translateY(3vmin); }
+  #face.sleeping { --glow: #35407a; }
+  #face.sleeping .eye { height: 2.2vmin; border-radius: 1.1vmin; box-shadow: none; }
+
+  @keyframes chat { from { transform: scaleY(1); } to { transform: scaleY(.9); } }
+
+  /* look direction, applied on top of mood via a wrapper */
+  #eyes { display: flex; gap: 11vmin; transition: transform 380ms cubic-bezier(.34,1.3,.64,1); }
+
+  /* camera-on indicator — always visible when the lens is live */
+  #camlight {
+    position: absolute; top: 2.5vmin; right: 3vmin;
+    width: 3vmin; height: 3vmin; border-radius: 50%;
+    background: #ff4d4d; box-shadow: 0 0 3vmin #ff4d4d;
+    opacity: 0; transition: opacity 150ms;
+  }
+  #camlight.on { opacity: 1; }
+
+  /* ---------- status strip ---------- */
+  #strip {
+    display: flex; align-items: center; gap: 3vw;
+    padding: 2.5vmin 4vw calc(2.5vmin + env(safe-area-inset-bottom));
+    font-size: 3.4vmin; letter-spacing: .01em;
+  }
+  #state { flex: 1; }
+  #strip button {
+    font: inherit; font-size: 3.4vmin;
+    background: none; border: 1px solid #2b3466; color: var(--dim);
+    padding: 1.4vmin 3.4vmin; border-radius: 99px;
+  }
+  #strip button.live { border-color: var(--glow); color: var(--glow); }
+
+  /* ---------- setup ---------- */
+  #setup {
+    position: fixed; inset: 0; background: #080a20; padding: 7vw;
+    overflow-y: auto; display: none; font-size: 4vmin; line-height: 1.55;
+  }
+  #setup.open { display: block; }
+  #setup h1 { font-size: 6vmin; color: #cdd6ff; margin: 0 0 1em; font-weight: 600; }
+  #setup label { display: block; margin: 1.4em 0 .4em; color: #8f9ddb; }
+  #setup input, #setup select {
+    width: 100%; font: inherit; padding: .7em .8em;
+    background: #11163a; border: 1px solid #2b3466; border-radius: .5em; color: #e8ecff;
+  }
+  #setup .row { display: flex; gap: 3vw; margin-top: 2em; }
+  #setup .row button {
+    flex: 1; font: inherit; padding: .85em; border-radius: .6em;
+    background: #1d2456; border: 1px solid #2b3466; color: #cdd6ff;
+  }
+  #setup .row button.primary { background: var(--glow); color: #06122b; border-color: var(--glow); font-weight: 600; }
+  #setup p.note { color: #6b7bb8; font-size: 3.4vmin; margin-top: 2em; }
+</style>
+
+<div id="face">
+  <div id="eyes">
+    <div class="eye left"></div>
+    <div class="eye right"></div>
+  </div>
+  <div id="camlight"></div>
+</div>
+
+<div id="strip">
+  <span id="state">Tap the face and talk</span>
+  <button id="linkBtn">Connect</button>
+  <button id="setupBtn">Setup</button>
+</div>
+
+<div id="setup">
+  <h1>Robot setup</h1>
+
+  <label for="model">Model</label>
+  <select id="model">
+    <option value="claude-haiku-4-5-20251001">Haiku — fastest, cheapest</option>
+    <option value="claude-sonnet-4-6">Sonnet — smarter, slower</option>
+  </select>
+
+  <label for="name">Robot's name</label>
+  <input id="name" type="text" value="Bolt" autocomplete="off">
+
+  <label for="kids">Who it's talking to</label>
+  <input id="kids" type="text" placeholder="e.g. Ada (6) and Theo (4)" autocomplete="off">
+
+  <label for="link">Connection</label>
+  <select id="link">
+    <option value="ble">Bluetooth — phone</option>
+    <option value="serial">USB serial — laptop</option>
+    <option value="none">None — face only</option>
+  </select>
+
+  <label for="cam">Camera</label>
+  <select id="cam">
+    <option value="off">Off</option>
+    <option value="on">On — send a photo when asked to look</option>
+  </select>
+
+  <div class="row">
+    <button id="testBtn">Test voice</button>
+    <button id="doneBtn" class="primary">Done</button>
+  </div>
+
+  <p class="note">The API key lives on the server, not on this phone. Nothing secret is
+  stored here, so it is safe to leave this page open and hand the robot to a child.</p>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   SETTINGS
+   ============================================================ */
+const cfg = {
+  model: "claude-haiku-4-5-20251001", name: "Bolt",
+  kids: "", link: "ble", cam: "off"
+};
+
+// The brain lives on the server. No API key on this device.
+const BRAIN = "/api/chat";
+
+/* ============================================================
+   FACE
+   ============================================================ */
+const faceEl = document.getElementById("face");
+const eyesEl = document.getElementById("eyes");
+const stateEl = document.getElementById("state");
+const camLight = document.getElementById("camlight");
+
+const MOODS = ["neutral","happy","excited","thinking","listening","talking",
+               "confused","sad","sleeping"];
+let mood = "neutral";
+let busy = false;        // true only while a turn is actually in progress
+
+function setMood(m) {
+  if (!MOODS.includes(m)) m = "neutral";
+  mood = m;
+  faceEl.className = m === "neutral" ? "" : m;
+}
+function say(text) { stateEl.textContent = text; }
+
+// blinking — random, human-ish, paused while sleeping
+(function blinkLoop() {
+  const wait = 2200 + Math.random() * 4200;
+  setTimeout(() => {
+    if (mood !== "sleeping") {
+      faceEl.classList.add("blink");
+      setTimeout(() => faceEl.classList.remove("blink"), 110);
+      // occasional double blink
+      if (Math.random() < 0.25) {
+        setTimeout(() => {
+          faceEl.classList.add("blink");
+          setTimeout(() => faceEl.classList.remove("blink"), 100);
+        }, 230);
+      }
+    }
+    blinkLoop();
+  }, wait);
+})();
+
+// idle glances — small eye movements so it looks alive when nothing's happening
+let lookLocked = false;
+function look(x, y) {           // x,y in -1..1
+  eyesEl.style.transform = `translate(${x * 3.2}vmin, ${y * 2.4}vmin)`;
+}
+(function glanceLoop() {
+  setTimeout(() => {
+    if (!lookLocked && (mood === "neutral" || mood === "happy")) {
+      look((Math.random() - 0.5) * 1.6, (Math.random() - 0.5) * 1.2);
+      setTimeout(() => { if (!lookLocked) look(0, 0); }, 900 + Math.random() * 900);
+    }
+    glanceLoop();
+  }, 2600 + Math.random() * 3600);
+})();
+
+/* ============================================================
+   THE BODY — one letter per command, sent over BLE or USB
+   The micro:bit only ever sees a single character. The phone
+   does all the timing, so the MakeCode program stays tiny.
+   ============================================================ */
+const UART = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+let writeChar = null;     // bluetooth
+let serialPort = null;    // usb
+let linked = false;
+
+const linkBtn = document.getElementById("linkBtn");
+
+async function connect() {
+  try {
+    if (cfg.link === "none") { say("Face only — no body connected"); return; }
+
+    if (cfg.link === "serial") {
+      if (!navigator.serial) { say("This browser has no USB serial"); return; }
+      serialPort = await navigator.serial.requestPort();
+      await serialPort.open({ baudRate: 115200 });
+    } else {
+      if (!navigator.bluetooth) { say("This browser has no Bluetooth"); return; }
+      const dev = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: "BBC micro:bit" }],
+        optionalServices: [UART]
+      });
+      dev.addEventListener("gattserverdisconnected", () => {
+        linked = false; linkBtn.classList.remove("live");
+        linkBtn.textContent = "Connect"; say("Body disconnected");
+      });
+      const server = await dev.gatt.connect();
+      const svc = await server.getPrimaryService(UART);
+      // The two UART characteristics get named inconsistently across
+      // firmware versions, so find the writable one rather than guessing.
+      const chars = await svc.getCharacteristics();
+      writeChar = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
+      if (!writeChar) throw new Error("no writable characteristic");
+    }
+    linked = true;
+    linkBtn.classList.add("live");
+    linkBtn.textContent = "Linked";
+    say("Body connected");
+    setMood("excited"); setTimeout(() => setMood("neutral"), 1200);
+  } catch (e) {
+    say("Couldn't connect — " + (e.message || e));
+  }
+}
+linkBtn.onclick = connect;
+
+async function send(letter) {
+  if (!linked) return;
+  const bytes = new TextEncoder().encode(letter + "\n");
+  try {
+    if (serialPort) {
+      const w = serialPort.writable.getWriter();
+      await w.write(bytes); w.releaseLock();
+    } else if (writeChar) {
+      if (writeChar.properties.writeWithoutResponse)
+        await writeChar.writeValueWithoutResponse(bytes);
+      else
+        await writeChar.writeValue(bytes);
+    }
+  } catch (e) { /* a dropped packet shouldn't stop the show */ }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// The letters the micro:bit understands. Keep this list and the
+// MakeCode program in step — if you add one here, add it there.
+const MOVES = {
+  forward: "F", back: "B", left: "L", right: "R", spin: "P", stop: "S"
+};
+
+async function runMoves(moves) {
+  if (!Array.isArray(moves)) return;
+  for (const m of moves.slice(0, 8)) {           // cap it — no infinite driving
+    const letter = MOVES[m.do];
+    if (!letter) continue;
+    const secs = Math.min(Math.max(Number(m.for) || 0.6, 0.1), 4);
+    lookLocked = true;
+    if (m.do === "left") look(-1, 0);
+    else if (m.do === "right") look(1, 0);
+    else if (m.do === "back") look(0, 0.6);
+    else look(0, -0.3);
+    await send(letter);
+    await sleep(secs * 1000);
+    await send("S");
+  }
+  lookLocked = false; look(0, 0);
+}
+
+/* ============================================================
+   EARS AND MOUTH
+   ============================================================ */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false;
+
+// iOS will not speak unless the speech engine has been started from a real
+// tap at least once. So the first time the user touches anything, we play a
+// silent utterance to unlock it. Everything after that is allowed.
+let audioUnlocked = false;
+function unlockAudio() {
+  if (audioUnlocked) return;
+  try {
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    speechSynthesis.speak(u);
+    audioUnlocked = true;
+  } catch (e) { /* nothing we can do */ }
+}
+
+function speak(text) {
+  return new Promise(resolve => {
+    if (!text) return resolve();
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0; u.pitch = 1.25;      // a shade high — reads as friendly, not comic
+    u.onend = finish;
+    u.onerror = finish;
+
+    try {
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+    } catch (e) { return finish(); }
+
+    // Safety net. If the engine silently refuses (which iOS does), release
+    // the face anyway rather than locking the robot up.
+    setTimeout(finish, Math.max(3500, text.length * 110));
+  });
+}
+
+function listen() {
+  if (!SR) { say("This browser can't hear — use Chrome"); return; }
+  if (listening) return;
+  rec = new SR();
+  rec.lang = "en-GB";
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  rec.onstart = () => { listening = true; setMood("listening"); say("Listening…"); };
+  rec.onerror = e => {
+    listening = false; setMood("neutral");
+    say(e.error === "not-allowed" ? "Microphone blocked — allow it in Chrome"
+                                  : "Didn't catch that — tap and try again");
+  };
+  rec.onend = () => { listening = false; };
+  rec.onresult = e => {
+    const heard = e.results[0][0].transcript.trim();
+    say("“" + heard + "”");
+    think(heard);
+  };
+  rec.start();
+}
+
+faceEl.onclick = () => {
+  unlockAudio();                      // must happen inside the tap itself
+  if (busy) {                         // second tap cancels a stuck turn
+    busy = false;
+    speechSynthesis.cancel();
+    faceEl.classList.remove("talking");
+    send("S");
+    setMood("neutral");
+    say("Tap the face and talk");
+    return;
+  }
+  listen();
+};
+
+/* ============================================================
+   CAMERA — only ever fires for one frame, on request,
+   and the red light is on whenever the lens is open.
+   ============================================================ */
+let stream = null;
+async function snap() {
+  if (cfg.cam !== "on") return null;
+  try {
+    if (!stream) {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: 640, height: 480 }
+      });
+    }
+    camLight.classList.add("on");
+    const v = document.createElement("video");
+    v.srcObject = stream; v.muted = true; await v.play();
+    await sleep(350);                       // let exposure settle
+    const c = document.createElement("canvas");
+    c.width = 640; c.height = 480;
+    c.getContext("2d").drawImage(v, 0, 0, 640, 480);
+    v.pause(); v.srcObject = null;
+    camLight.classList.remove("on");
+    return c.toDataURL("image/jpeg", 0.7).split(",")[1];
+  } catch (e) {
+    camLight.classList.remove("on");
+    return null;
+  }
+}
+
+/* ============================================================
+   BRAIN
+   ============================================================ */
+const history = [];
+
+function systemPrompt() {
+  return `You are ${cfg.name}, a small wheeled robot in a family home in England.
+${cfg.kids ? "You are talking to " + cfg.kids + "." : "You are talking to young children."}
+
+You are cheerful, curious and brief. You are a robot, not an assistant — you have a
+body, you like driving about, and you are delighted to be asked to do things.
+
+Rules for what you say:
+- One or two short sentences. Never more. These are small children listening, not reading.
+- Plain words. No lists, no markdown, no emoji — it is read aloud.
+- If you don't understand, say so cheerfully and ask them to try again.
+- Never claim to have done something you weren't able to do.
+
+You reply ONLY with a JSON object, no other text and no code fences:
+{"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean}
+
+- "moves" is optional. Each "do" is one of: forward, back, left, right, spin, stop.
+  "for" is seconds, 0.1 to 4. Left and right turn on the spot. Keep it to a few moves.
+- "look" set to true means take a photo before answering — use it when asked what
+  you can see, or to find something. You will then be shown the photo and asked again.
+- Match "mood" to what you're saying: happy, excited, thinking, confused, sad, sleeping,
+  or neutral.
+
+Safety: you drive on the floor around small children. Never chain more than a few
+seconds of movement. If asked to do something that would hurt someone or break
+something, refuse cheerfully and suggest something fun instead.`;
+}
+
+async function callClaude(messages) {
+  const res = await fetch(BRAIN, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: cfg.model,
+      system: systemPrompt(),
+      messages
+    })
+  });
+  if (!res.ok) {
+    let why = "API " + res.status;
+    try { const e = await res.json(); if (e.error) why = e.error.message || e.error; } catch (_) {}
+    throw new Error(why);
+  }
+  const data = await res.json();
+  return data.content.filter(b => b.type === "text").map(b => b.text).join("");
+}
+
+function parse(raw) {
+  let t = (raw || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const a = t.indexOf("{"), b = t.lastIndexOf("}");
+  if (a !== -1 && b !== -1) t = t.slice(a, b + 1);
+  try { return JSON.parse(t); }
+  catch { return { say: "My brain went a bit fuzzy. Say that again?", mood: "confused" }; }
+}
+
+async function think(heard) {
+  busy = true;
+  setMood("thinking"); say("Thinking…");
+  try {
+    history.push({ role: "user", content: heard });
+    while (history.length > 12) history.shift();
+
+    let raw = await callClaude(history);
+    let plan = parse(raw);
+
+    // it asked to look — take one photo and ask again with the image attached
+    if (plan.look === true) {
+      const img = await snap();
+      if (img) {
+        history.push({ role: "assistant", content: raw });
+        history.push({ role: "user", content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: img } },
+          { type: "text", text: "Here is what your camera sees. Now answer." }
+        ]});
+        raw = await callClaude(history);
+        plan = parse(raw);
+      }
+    }
+
+    history.push({ role: "assistant", content: raw });
+
+    setMood(plan.mood || "neutral");
+    say(plan.say || "");
+
+    // move and talk together — a robot that waits its turn feels dead
+    const driving = runMoves(plan.moves);
+    if (plan.say) {
+      const held = mood;
+      faceEl.classList.add("talking");
+      await speak(plan.say);
+      faceEl.classList.remove("talking");
+      setMood(held);
+    }
+    await driving;
+
+    setTimeout(() => {
+      if (!busy && mood !== "listening") { setMood("neutral"); say("Tap the face and talk"); }
+    }, 2500);
+  } catch (e) {
+    await send("S");
+    setMood("confused");
+    say("Brain not reachable — " + (e.message || e));
+    await speak("I can't think right now.");
+  } finally {
+    // Whatever happened, the face must be tappable again.
+    busy = false;
+    faceEl.classList.remove("talking");
+  }
+}
+
+/* ============================================================
+   SETUP PANEL
+   ============================================================ */
+const setupEl = document.getElementById("setup");
+const F = id => document.getElementById(id);
+document.getElementById("setupBtn").onclick = () => setupEl.classList.add("open");
+F("doneBtn").onclick = () => {
+  cfg.model = F("model").value;
+  cfg.name = F("name").value.trim() || "Bolt";
+  cfg.kids = F("kids").value.trim();
+  cfg.link = F("link").value;
+  cfg.cam = F("cam").value;
+  setupEl.classList.remove("open");
+  say("Tap the face and talk");
+};
+F("testBtn").onclick = async () => {
+  unlockAudio();
+  setMood("happy");
+  await speak("Hello! I am " + (F("name").value.trim() || "Bolt") + ". Let's go.");
+  setMood("neutral");
+};
+
+// wake up
+setMood("sleeping");
+setTimeout(() => { setMood("happy"); setTimeout(() => setMood("neutral"), 1400); }, 700);
+</script>
