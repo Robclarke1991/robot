@@ -9,7 +9,7 @@
 //   ALLOWED_ORIGIN      (optional)  e.g. https://robot.mylittlestories.co.uk
 //                                   blocks other websites calling your endpoint
 
-export const config = { maxDuration: 30 };
+export const config = { maxDuration: 60 };   // web searches take a few seconds
 
 // Only these models can be requested, whatever the page asks for.
 const ALLOWED_MODELS = [
@@ -17,7 +17,7 @@ const ALLOWED_MODELS = [
   "claude-sonnet-4-6"
 ];
 
-const MAX_TOKENS = 400;      // replies are spoken aloud — they should be short
+const MAX_TOKENS = 1200;    // web search results need headroom; the prompt keeps replies short
 const MAX_MESSAGES = 16;     // cap the history a caller can push
 
 export default async function handler(req, res) {
@@ -61,7 +61,14 @@ export default async function handler(req, res) {
         model,
         max_tokens: MAX_TOKENS,
         system: typeof body.system === "string" ? body.system : undefined,
-        messages
+        messages,
+        // Lets the robot answer anything that depends on today — weather,
+        // local events, share prices. Capped so one question can't run away.
+        tools: [{
+          type: "web_search_20250305",
+          name: "web_search",
+          max_uses: 3
+        }]
       })
     });
 

@@ -138,10 +138,22 @@
   </select>
 
   <label for="name">Robot's name</label>
-  <input id="name" type="text" value="Bolt" autocomplete="off">
+  <input id="name" type="text" value="Moby" autocomplete="off">
 
   <label for="kids">Who it's talking to</label>
   <input id="kids" type="text" placeholder="e.g. Ada (6) and Theo (4)" autocomplete="off">
+
+  <label for="place">Where you are</label>
+  <input id="place" type="text" value="Salford, Greater Manchester" autocomplete="off">
+
+  <label for="voice">Voice</label>
+  <select id="voice"><option value="">Best available</option></select>
+
+  <label for="wake">Wake word</label>
+  <select id="wake">
+    <option value="off">Off — tap the face to talk</option>
+    <option value="on">On — listens for its name</option>
+  </select>
 
   <label for="link">Connection</label>
   <select id="link">
@@ -172,8 +184,9 @@
    SETTINGS
    ============================================================ */
 const cfg = {
-  model: "claude-haiku-4-5-20251001", name: "Bolt",
-  kids: "", link: "ble", cam: "off"
+  model: "claude-haiku-4-5-20251001", name: "Moby",
+  kids: "", place: "", link: "ble", cam: "off",
+  voice: "", wake: "off"
 };
 
 // The brain lives on the server. No API key on this device.
@@ -344,6 +357,52 @@ function unlockAudio() {
   } catch (e) { /* nothing we can do */ }
 }
 
+// Browsers ship a spread of voices and the default is usually the worst.
+// Anything marked Enhanced, Premium or Natural has been downloaded by the
+// user and sounds dramatically better than the stock one.
+const GOOD_VOICES = [
+  /premium/i, /enhanced/i, /natural/i,
+  /Google UK English Male/i, /Google UK English Female/i,
+  /Daniel/i, /Arthur/i, /Serena/i, /Kate/i
+];
+
+function pickVoice() {
+  const all = speechSynthesis.getVoices();
+  if (!all.length) return null;
+  if (cfg.voice) {
+    const chosen = all.find(v => v.name === cfg.voice);
+    if (chosen) return chosen;
+  }
+  const british = all.filter(v => /en[-_]GB/i.test(v.lang));
+  const pool = british.length ? british : all.filter(v => /^en/i.test(v.lang));
+  for (const pattern of GOOD_VOICES) {
+    const hit = pool.find(v => pattern.test(v.name));
+    if (hit) return hit;
+  }
+  return pool[0] || all[0];
+}
+
+function fillVoiceList() {
+  const sel = document.getElementById("voice");
+  if (!sel) return;
+  const all = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang));
+  if (!all.length) return;
+  const keep = sel.value;
+  sel.innerHTML = "";
+  const best = document.createElement("option");
+  best.value = ""; best.textContent = "Best available";
+  sel.appendChild(best);
+  for (const v of all) {
+    const o = document.createElement("option");
+    o.value = v.name;
+    o.textContent = v.name + " (" + v.lang + ")";
+    sel.appendChild(o);
+  }
+  sel.value = keep || cfg.voice;
+}
+speechSynthesis.onvoiceschanged = fillVoiceList;
+setTimeout(fillVoiceList, 500);
+
 function speak(text) {
   return new Promise(resolve => {
     if (!text) return resolve();
@@ -351,18 +410,25 @@ function speak(text) {
     const finish = () => { if (!done) { done = true; resolve(); } };
 
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.0; u.pitch = 1.25;      // a shade high — reads as friendly, not comic
+    const v = pickVoice();
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.rate = 0.98; u.pitch = 1.1;      // a shade high — friendly, not comic
     u.onend = finish;
     u.onerror = finish;
+
+    wakePaused = true;
+    const release = () => { wakePaused = false; finish(); };
+    u.onend = release;
+    u.onerror = release;
 
     try {
       speechSynthesis.cancel();
       speechSynthesis.speak(u);
-    } catch (e) { return finish(); }
+    } catch (e) { return release(); }
 
     // Safety net. If the engine silently refuses (which iOS does), release
     // the face anyway rather than locking the robot up.
-    setTimeout(finish, Math.max(3500, text.length * 110));
+    setTimeout(() => { wakePaused = false; finish(); }, Math.max(3500, text.length * 110));
   });
 }
 
@@ -386,6 +452,66 @@ function listen() {
     think(heard);
   };
   rec.start();
+}
+
+// ---------- always-on listening for its name ----------
+// One continuous recogniser sits running. When it hears the robot's name it
+// treats whatever follows as the command. Short names get misheard a lot, so
+// we accept the obvious near-misses too.
+let wake = null, wakeRunning = false, wakePaused = false;
+
+function wakePattern() {
+  const n = (cfg.name || "Moby").toLowerCase();
+  // Near-misses the recogniser commonly returns. Deliberately excludes real
+  // words like "maybe" and "movie", which would false-trigger off the telly.
+  const alts = {
+    moby:  "moby|mobi|mobey|mopey|moped",
+    tim:   "tim|timm|team|teem|tym|tin",
+    digby: "digby|digbee|dig bee",
+    gizmo: "gizmo|gizmoe|gismo"
+  };
+  return new RegExp("\\b(" + (alts[n] || n) + ")\\b", "i");
+}
+
+function startWake() {
+  if (!SR || cfg.wake !== "on" || wakeRunning) return;
+  wake = new SR();
+  wake.lang = "en-GB";
+  wake.continuous = true;
+  wake.interimResults = true;
+
+  wake.onresult = e => {
+    if (busy || wakePaused) return;
+    const r = e.results[e.results.length - 1];
+    if (!r.isFinal) return;
+    const heard = r[0].transcript.trim();
+    const m = heard.match(wakePattern());
+    if (!m) return;
+    const after = heard.slice(heard.toLowerCase().indexOf(m[0].toLowerCase()) + m[0].length)
+                       .replace(/^[\s,.!?-]+/, "").trim();
+    if (after.length > 2) {
+      think(after);                       // name and command in one breath
+    } else {
+      setMood("listening");               // just the name — perk up
+      say("Yes?");
+      speak("Yes?");
+    }
+  };
+
+  // Recognition sessions time out on their own. Restart unless we stopped it.
+  wake.onend = () => { if (wakeRunning) { try { wake.start(); } catch (e) {} } };
+  wake.onerror = ev => {
+    if (ev.error === "not-allowed") { wakeRunning = false; say("Microphone blocked"); }
+  };
+
+  wakeRunning = true;
+  try { wake.start(); } catch (e) {}
+  say("Listening for " + cfg.name);
+}
+
+function stopWake() {
+  wakeRunning = false;
+  if (wake) { try { wake.stop(); } catch (e) {} }
 }
 
 faceEl.onclick = () => {
@@ -442,6 +568,12 @@ ${cfg.kids ? "You are talking to " + cfg.kids + "." : "You are talking to young 
 
 You are cheerful, curious and brief. You are a robot, not an assistant — you have a
 body, you like driving about, and you are delighted to be asked to do things.
+${cfg.place ? "You live in " + cfg.place + ". When someone asks about the weather, what is on nearby, or anything local, that is the place they mean." : ""}
+
+You can search the web. Use it whenever the answer depends on today: weather,
+news, what is on locally, sport, share prices, opening times. Do not guess at
+these and do not say you cannot check — look it up. Grown-ups ask you things
+too, and for them you can be a little more detailed, though still spoken-length.
 
 Rules for what you say:
 - One or two short sentences. Never more. These are small children listening, not reading.
@@ -480,7 +612,10 @@ async function callClaude(messages) {
     throw new Error(why);
   }
   const data = await res.json();
-  return data.content.filter(b => b.type === "text").map(b => b.text).join("");
+  // With web search the reply contains search blocks and possibly some
+  // chatter before the answer. The JSON we want is always the last text block.
+  const texts = data.content.filter(b => b.type === "text").map(b => b.text);
+  return texts.length ? texts[texts.length - 1] : "";
 }
 
 function parse(raw) {
@@ -494,6 +629,7 @@ function parse(raw) {
 async function think(heard) {
   busy = true;
   setMood("thinking"); say("Thinking…");
+  const slow = setTimeout(() => { if (busy) say("Looking that up…"); }, 2500);
   try {
     history.push({ role: "user", content: heard });
     while (history.length > 12) history.shift();
@@ -540,6 +676,7 @@ async function think(heard) {
     say("Brain not reachable — " + (e.message || e));
     await speak("I can't think right now.");
   } finally {
+    clearTimeout(slow);
     // Whatever happened, the face must be tappable again.
     busy = false;
     faceEl.classList.remove("talking");
@@ -554,17 +691,22 @@ const F = id => document.getElementById(id);
 document.getElementById("setupBtn").onclick = () => setupEl.classList.add("open");
 F("doneBtn").onclick = () => {
   cfg.model = F("model").value;
-  cfg.name = F("name").value.trim() || "Bolt";
+  cfg.name = F("name").value.trim() || "Moby";
   cfg.kids = F("kids").value.trim();
+  cfg.place = F("place").value.trim();
+  cfg.voice = F("voice").value;
+  cfg.wake = F("wake").value;
   cfg.link = F("link").value;
   cfg.cam = F("cam").value;
   setupEl.classList.remove("open");
-  say("Tap the face and talk");
+  stopWake();
+  if (cfg.wake === "on") { unlockAudio(); startWake(); }
+  else say("Tap the face and talk");
 };
 F("testBtn").onclick = async () => {
   unlockAudio();
   setMood("happy");
-  await speak("Hello! I am " + (F("name").value.trim() || "Bolt") + ". Let's go.");
+  await speak("Hello! I am " + (F("name").value.trim() || "Moby") + ". Let's go.");
   setMood("neutral");
 };
 
