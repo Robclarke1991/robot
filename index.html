@@ -168,6 +168,16 @@
     <option value="on">On — send a photo when asked to look</option>
   </select>
 
+  <label>Test the wheels directly</label>
+  <div class="row" id="drivePad">
+    <button data-m="L">&#8630; Left</button>
+    <button data-m="F">&#8593; Fwd</button>
+    <button data-m="R">Right &#8631;</button>
+    <button data-m="S">Stop</button>
+  </div>
+  <p class="note" id="driveMsg">Connect first, then hold a button. This bypasses
+  Claude entirely — if these work, the robot is wired up correctly.</p>
+
   <div class="row">
     <button id="testBtn">Test voice</button>
     <button id="doneBtn" class="primary">Done</button>
@@ -295,8 +305,9 @@ async function connect() {
 }
 linkBtn.onclick = connect;
 
+let sendFails = 0;
 async function send(letter) {
-  if (!linked) return;
+  if (!linked) { say("Not connected to the body"); return false; }
   const bytes = new TextEncoder().encode(letter + "\n");
   try {
     if (serialPort) {
@@ -307,8 +318,16 @@ async function send(letter) {
         await writeChar.writeValueWithoutResponse(bytes);
       else
         await writeChar.writeValue(bytes);
+    } else {
+      say("No writable channel found"); return false;
     }
-  } catch (e) { /* a dropped packet shouldn't stop the show */ }
+    sendFails = 0;
+    return true;
+  } catch (e) {
+    sendFails++;
+    if (sendFails < 4) say("Send failed: " + (e.message || e));
+    return false;
+  }
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -584,8 +603,11 @@ Rules for what you say:
 You reply ONLY with a JSON object, no other text and no code fences:
 {"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean}
 
-- "moves" is optional. Each "do" is one of: forward, back, left, right, spin, stop.
-  "for" is seconds, 0.1 to 4. Left and right turn on the spot. Keep it to a few moves.
+- "moves" is how you actually move. Each "do" is one of: forward, back, left,
+  right, spin, stop. "for" is seconds, 0.1 to 4. Left and right turn on the spot.
+  CRITICAL: if you say you are going to move, you MUST include the moves array in
+  the same reply. Saying "driving forward now" with no "moves" is a lie and the
+  children will see the robot sit still. No moves means say you are staying put.
 - "look" set to true means take a photo before answering — use it when asked what
   you can see, or to find something. You will then be shown the photo and asked again.
 - Match "mood" to what you're saying: happy, excited, thinking, confused, sad, sleeping,
@@ -703,6 +725,18 @@ F("doneBtn").onclick = () => {
   if (cfg.wake === "on") { unlockAudio(); startWake(); }
   else say("Tap the face and talk");
 };
+document.querySelectorAll("#drivePad button").forEach(b => {
+  const go = async ev => {
+    ev.preventDefault();
+    const ok = await send(b.dataset.m);
+    F("driveMsg").textContent = ok
+      ? "Sent \"" + b.dataset.m + "\" — watch the micro:bit display for an arrow."
+      : "Nothing sent. Connect the body first.";
+  };
+  b.addEventListener("pointerdown", go);
+  b.addEventListener("pointerup", e => { e.preventDefault(); send("S"); });
+});
+
 F("testBtn").onclick = async () => {
   unlockAudio();
   setMood("happy");
