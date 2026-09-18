@@ -344,6 +344,12 @@ const MOVES = {
   forward: "F", back: "B", left: "L", right: "R", spin: "P", stop: "S"
 };
 
+// Single digits so the micro:bit side stays trivial to parse.
+const LIGHTS = {
+  off: "0", red: "1", green: "2", blue: "3",
+  yellow: "4", purple: "5", white: "6", rainbow: "7"
+};
+
 // The buggy stops on its own if it hears nothing for 1.5 seconds — that's the
 // safety net for a dropped connection. So a long move has to be kept alive by
 // repeating the command, not sent once and left.
@@ -477,6 +483,9 @@ function speak(text) {
 function listen() {
   if (!SR) { say("This browser can't hear — use Chrome"); return; }
   if (listening) return;
+  // Only one thing can hold the mic. Park the always-on listener first.
+  const wasWaking = wakeRunning;
+  stopWake();
   rec = new SR();
   rec.lang = "en-GB";
   rec.interimResults = false;
@@ -487,7 +496,10 @@ function listen() {
     say(e.error === "not-allowed" ? "Microphone blocked — allow it in Chrome"
                                   : "Didn't catch that — tap and try again");
   };
-  rec.onend = () => { listening = false; };
+  rec.onend = () => {
+    listening = false;
+    if (wasWaking) setTimeout(startWake, 400);   // hand the mic back
+  };
   rec.onresult = e => {
     const heard = e.results[0][0].transcript.trim();
     say("“" + heard + "”");
@@ -501,6 +513,20 @@ function listen() {
 // treats whatever follows as the command. Short names get misheard a lot, so
 // we accept the obvious near-misses too.
 let wake = null, wakeRunning = false, wakePaused = false;
+// After answering "Yes?" we accept the NEXT thing said as the command,
+// without needing the name again. Times out so it doesn't listen forever.
+let awaiting = false, awaitTimer = null;
+
+function startAwaiting() {
+  awaiting = true;
+  clearTimeout(awaitTimer);
+  awaitTimer = setTimeout(() => {
+    if (awaiting) {
+      awaiting = false;
+      if (!busy) { setMood("neutral"); say("Listening for " + cfg.name); }
+    }
+  }, 9000);
+}
 
 function wakePattern() {
   const n = (cfg.name || "Moby").toLowerCase();
@@ -527,15 +553,30 @@ function startWake() {
     const r = e.results[e.results.length - 1];
     if (!r.isFinal) return;
     const heard = r[0].transcript.trim();
+    if (!heard) return;
+
     const m = heard.match(wakePattern());
-    if (!m) return;
+
+    if (!m) {
+      // No name — but if we just said "Yes?", this IS the command.
+      if (awaiting && heard.length > 1) {
+        awaiting = false;
+        clearTimeout(awaitTimer);
+        think(heard);
+      }
+      return;
+    }
+
     const after = heard.slice(heard.toLowerCase().indexOf(m[0].toLowerCase()) + m[0].length)
                        .replace(/^[\s,.!?-]+/, "").trim();
     if (after.length > 2) {
+      awaiting = false;
+      clearTimeout(awaitTimer);
       think(after);                       // name and command in one breath
     } else {
-      setMood("listening");               // just the name — perk up
+      setMood("listening");               // just the name — perk up and wait
       say("Yes?");
+      startAwaiting();
       speak("Yes?");
     }
   };
@@ -698,7 +739,7 @@ Call the web_search tool as many times as you need first. Only your FINAL
 message must be JSON — searching first is expected and correct.
 
 Your final message is ONLY a JSON object, no other text and no code fences:
-{"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean, "hunt": string, "remember": string, "then_listen": boolean, "story": string}
+{"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean, "hunt": string, "remember": string, "then_listen": boolean, "story": string, "lights": string}
 
 - "moves" is how you actually move. Each "do" is one of: forward, back, left,
   right, spin, stop. "for" is seconds, 0.1 to 4. Left and right turn on the spot.
@@ -707,6 +748,10 @@ Your final message is ONLY a JSON object, no other text and no code fences:
   children will see the robot sit still. No moves means say you are staying put.
 - "look" set to true means take a photo before answering — use it when asked what
   you can see. You will then be shown the photo and asked again.
+- "lights" changes the colour of the light bar across your front. One of:
+  off, red, green, blue, yellow, purple, white, rainbow. Use it freely — flash
+  rainbow when excited, red when cross, blue when sad. If asked to flash your
+  lights, do it and say so.
 - "hunt" is for games. Set it to a short description of what to search for when
   asked to find someone or something, to come to a person, to follow them, or to
   play hide and seek — e.g. "a child hiding" or "the red ball". You then drive
@@ -819,6 +864,10 @@ async function think(heard) {
       busy = false;                       // huntFor takes over the busy flag
       await huntFor(plan.hunt.trim());
       return;
+    }
+
+    if (typeof plan.lights === "string" && LIGHTS[plan.lights.toLowerCase()]) {
+      await send(LIGHTS[plan.lights.toLowerCase()]);
     }
 
     setMood(plan.mood || "neutral");
