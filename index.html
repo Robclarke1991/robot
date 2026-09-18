@@ -465,7 +465,8 @@ function speak(text) {
     u.onerror = finish;
 
     wakePaused = true;
-    const release = () => { wakePaused = false; finish(); };
+    duck(true);
+    const release = () => { wakePaused = false; duck(false); finish(); };
     u.onend = release;
     u.onerror = release;
 
@@ -476,7 +477,7 @@ function speak(text) {
 
     // Safety net. If the engine silently refuses (which iOS does), release
     // the face anyway rather than locking the robot up.
-    setTimeout(() => { wakePaused = false; finish(); }, Math.max(3500, text.length * 110));
+    setTimeout(() => { wakePaused = false; duck(false); finish(); }, Math.max(3500, text.length * 110));
   });
 }
 
@@ -739,7 +740,7 @@ Call the web_search tool as many times as you need first. Only your FINAL
 message must be JSON — searching first is expected and correct.
 
 Your final message is ONLY a JSON object, no other text and no code fences:
-{"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean, "hunt": string, "remember": string, "then_listen": boolean, "story": string, "lights": string}
+{"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean, "hunt": string, "remember": string, "then_listen": boolean, "story": string, "lights": string, "music": {"do": string, "what": string}}
 
 - "moves" is how you actually move. Each "do" is one of: forward, back, left,
   right, spin, stop. "for" is seconds, 0.1 to 4. Left and right turn on the spot.
@@ -752,6 +753,9 @@ Your final message is ONLY a JSON object, no other text and no code fences:
   off, red, green, blue, yellow, purple, white, rainbow. Use it freely — flash
   rainbow when excited, red when cross, blue when sad. If asked to flash your
   lights, do it and say so.
+- "music" controls Spotify. "do" is play, pause, resume or next. For play, put
+  the song, artist or a description in "what" — e.g. "Baby Shark" or "calm
+  bedtime piano". Use it when asked for music, a song, or a dance.
 - "hunt" is for games. Set it to a short description of what to search for when
   asked to find someone or something, to come to a person, to follow them, or to
   play hide and seek — e.g. "a child hiding" or "the red ball". You then drive
@@ -870,6 +874,11 @@ async function think(heard) {
       await send(LIGHTS[plan.lights.toLowerCase()]);
     }
 
+    if (plan.music && typeof plan.music.do === "string") {
+      const r = await music(plan.music.do, plan.music.what);
+      if (r && r.title) say(r.title + " — " + r.artist);
+    }
+
     setMood(plan.mood || "neutral");
     say((plan.say || "") + (lastSearched ? "  \u{1F50E}" : ""));
 
@@ -905,6 +914,37 @@ async function think(heard) {
     busy = false;
     faceEl.classList.remove("talking");
   }
+}
+
+/* ============================================================
+   MUSIC — the page can't play audio itself on a phone, so it
+   drives the Spotify app over Spotify Connect instead.
+   ============================================================ */
+let musicOn = false;
+
+async function music(doWhat, query, volume) {
+  try {
+    const r = await fetch("/api/spotify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ doWhat, query, volume })
+    });
+    const d = await r.json();
+    if (!r.ok) { say(d.error || "Music failed"); return null; }
+    if (doWhat === "play")  musicOn = true;
+    if (doWhat === "pause") musicOn = false;
+    return d;
+  } catch (e) {
+    say("Music failed: " + (e.message || e));
+    return null;
+  }
+}
+
+// Drop the volume while he talks, then put it back, so you can hear him
+// over the song without having to stop it.
+async function duck(on) {
+  if (!musicOn) return;
+  await music("volume", null, on ? 18 : 80);
 }
 
 /* ============================================================
