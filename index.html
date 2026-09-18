@@ -178,6 +178,12 @@
   <p class="note" id="driveMsg">Connect first, then hold a button. This bypasses
   Claude entirely — if these work, the robot is wired up correctly.</p>
 
+  <label>Memory</label>
+  <p class="note" id="memList" style="margin-top:.3em"></p>
+  <div class="row">
+    <button id="forgetBtn">Forget everything</button>
+  </div>
+
   <div class="row">
     <button id="testBtn">Test voice</button>
     <button id="doneBtn" class="primary">Done</button>
@@ -338,21 +344,38 @@ const MOVES = {
   forward: "F", back: "B", left: "L", right: "R", spin: "P", stop: "S"
 };
 
+// The buggy stops on its own if it hears nothing for 1.5 seconds — that's the
+// safety net for a dropped connection. So a long move has to be kept alive by
+// repeating the command, not sent once and left.
+async function hold(letter, secs) {
+  const until = Date.now() + secs * 1000;
+  await send(letter);
+  while (Date.now() < until) {
+    await sleep(400);
+    if (!moving) break;
+    await send(letter);
+  }
+  await send("S");
+}
+
+let moving = false;
+
 async function runMoves(moves) {
   if (!Array.isArray(moves)) return;
+  moving = true;
   for (const m of moves.slice(0, 8)) {           // cap it — no infinite driving
+    if (!moving) break;
     const letter = MOVES[m.do];
     if (!letter) continue;
-    const secs = Math.min(Math.max(Number(m.for) || 0.6, 0.1), 4);
+    const secs = Math.min(Math.max(Number(m.for) || 0.6, 0.1), 8);
     lookLocked = true;
     if (m.do === "left") look(-1, 0);
     else if (m.do === "right") look(1, 0);
     else if (m.do === "back") look(0, 0.6);
     else look(0, -0.3);
-    await send(letter);
-    await sleep(secs * 1000);
-    await send("S");
+    await hold(letter, secs);
   }
+  moving = false;
   lookLocked = false; look(0, 0);
 }
 
@@ -535,7 +558,10 @@ function stopWake() {
 
 faceEl.onclick = () => {
   unlockAudio();                      // must happen inside the tap itself
-  if (busy) {                         // second tap cancels a stuck turn
+  if (busy || hunting || telling) {   // second tap stops a hunt, a story, or a stuck turn
+    hunting = false;
+    telling = false;
+    moving = false;
     busy = false;
     speechSynthesis.cancel();
     faceEl.classList.remove("talking");
@@ -580,19 +606,87 @@ async function snap() {
    BRAIN
    ============================================================ */
 const history = [];
+let lastSearched = false;
+
+/* ---------- what Moby remembers between conversations ----------
+   Kept on this phone. Small, capped, and clearable from Setup. */
+const MEM_KEY = "moby.memory.v1";
+const MEM_MAX = 300;   // Storage isn't the limit — every fact is sent with every
+                       // question, so this caps prompt size, not disk space.
+                       // 300 short facts is roughly 3,000 tokens: fine.
+let memory = { facts: [], scores: {}, stories: [] };
+
+function loadMemory() {
+  try {
+    const raw = localStorage.getItem(MEM_KEY);
+    if (raw) memory = Object.assign(memory, JSON.parse(raw));
+  } catch (e) { /* first run, or storage blocked */ }
+}
+function saveMemory() {
+  try {
+    memory.facts = memory.facts.slice(-MEM_MAX);
+    memory.stories = memory.stories.slice(-40);
+    localStorage.setItem(MEM_KEY, JSON.stringify(memory));
+  } catch (e) { /* not fatal — he just forgets */ }
+}
+function remember(fact) {
+  const f = String(fact).trim();
+  if (!f || f.length > 200) return;
+  if (memory.facts.includes(f)) return;
+  // Near-duplicates creep in over time — drop an older fact that's mostly
+  // the same words, so the list stays useful rather than just long.
+  const key = f.toLowerCase().replace(/[^a-z0-9 ]/g, "");
+  memory.facts = memory.facts.filter(old => {
+    const k = old.toLowerCase().replace(/[^a-z0-9 ]/g, "");
+    return !(k.includes(key) || key.includes(k));
+  });
+  memory.facts.push(f);
+  saveMemory();
+}
+function memoryBlock() {
+  const bits = [];
+  if (memory.facts.length) {
+    bits.push("Things you have been told before:\n- " + memory.facts.join("\n- "));
+  }
+  const names = Object.keys(memory.scores);
+  if (names.length) {
+    bits.push("Quiz scores so far: " + names.map(n =>
+      n + " " + memory.scores[n].right + "/" + memory.scores[n].asked).join(", "));
+  }
+  if (memory.stories.length) {
+    bits.push("Stories you have already told: " + memory.stories.join("; ") +
+              ". Do not repeat these — make up something new.");
+  }
+  return bits.length ? "\n\n" + bits.join("\n\n") : "";
+}
+loadMemory();
+
+function today() {
+  const d = new Date();
+  return d.toLocaleDateString("en-GB", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric"
+  }) + ", " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
 
 function systemPrompt() {
   return `You are ${cfg.name}, a small wheeled robot in a family home in England.
+
+Right now it is ${today()}. Work out "today", "tomorrow" and "this weekend"
+from that date, never from anything you remember.
 ${cfg.kids ? "You are talking to " + cfg.kids + "." : "You are talking to young children."}
 
 You are cheerful, curious and brief. You are a robot, not an assistant — you have a
 body, you like driving about, and you are delighted to be asked to do things.
 ${cfg.place ? "You live in " + cfg.place + ". When someone asks about the weather, what is on nearby, or anything local, that is the place they mean." : ""}
 
-You can search the web. Use it whenever the answer depends on today: weather,
-news, what is on locally, sport, share prices, opening times. Do not guess at
-these and do not say you cannot check — look it up. Grown-ups ask you things
-too, and for them you can be a little more detailed, though still spoken-length.
+You have a web_search tool. You MUST use it before answering anything that
+depends on the present day: weather and forecasts, news, what is on locally,
+sport, share prices, opening times, prices. Your own memory of these is out of
+date and will be wrong. Never answer a weather question without searching first.
+Search using the place name and the date.
+
+Grown-ups ask you things too, and for them you can be a little more detailed,
+though still short enough to say out loud.
 
 Rules for what you say:
 - One or two short sentences. Never more. These are small children listening, not reading.
@@ -600,8 +694,11 @@ Rules for what you say:
 - If you don't understand, say so cheerfully and ask them to try again.
 - Never claim to have done something you weren't able to do.
 
-You reply ONLY with a JSON object, no other text and no code fences:
-{"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean}
+Call the web_search tool as many times as you need first. Only your FINAL
+message must be JSON — searching first is expected and correct.
+
+Your final message is ONLY a JSON object, no other text and no code fences:
+{"say": string, "mood": one of ${MOODS.join("|")}, "moves": [{"do": string, "for": number}], "look": boolean, "hunt": string, "remember": string, "then_listen": boolean, "story": string}
 
 - "moves" is how you actually move. Each "do" is one of: forward, back, left,
   right, spin, stop. "for" is seconds, 0.1 to 4. Left and right turn on the spot.
@@ -609,23 +706,46 @@ You reply ONLY with a JSON object, no other text and no code fences:
   the same reply. Saying "driving forward now" with no "moves" is a lie and the
   children will see the robot sit still. No moves means say you are staying put.
 - "look" set to true means take a photo before answering — use it when asked what
-  you can see, or to find something. You will then be shown the photo and asked again.
+  you can see. You will then be shown the photo and asked again.
+- "hunt" is for games. Set it to a short description of what to search for when
+  asked to find someone or something, to come to a person, to follow them, or to
+  play hide and seek — e.g. "a child hiding" or "the red ball". You then drive
+  around looking for it by yourself. Put an excited line in "say" first.
 - Match "mood" to what you're saying: happy, excited, thinking, confused, sad, sleeping,
   or neutral.
+
+You remember things between conversations. Put anything worth keeping in
+"remember" — a child's favourite dinosaur, that it is someone's birthday next
+week, a promise you made. One short sentence. Do not store anything sensitive,
+and do not store what you already know.
+
+Set "then_listen" to true when you have asked a question and expect a reply
+straight away — during a quiz, a game, or when you have asked what they would
+like. The microphone opens automatically so nobody has to tap.
+
+You can run quizzes. Ask ONE question at a time, wait for the answer, say
+whether it was right, then ask the next. Keep score and mention it. Use
+"then_listen" for every question. Pitch the difficulty at whoever is playing.
+
+Set "story" to a short description when asked for a story, and say something
+like "let me think of one" in "say". You will then be asked to tell it properly.
+${memoryBlock()}
 
 Safety: you drive on the floor around small children. Never chain more than a few
 seconds of movement. If asked to do something that would hurt someone or break
 something, refuse cheerfully and suggest something fun instead.`;
 }
 
-async function callClaude(messages) {
+async function callClaude(messages, system, search, maxTokens) {
   const res = await fetch(BRAIN, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       model: cfg.model,
-      system: systemPrompt(),
-      messages
+      system: system || systemPrompt(),
+      messages,
+      search: search !== false,
+      max_tokens: maxTokens || undefined
     })
   });
   if (!res.ok) {
@@ -634,6 +754,10 @@ async function callClaude(messages) {
     throw new Error(why);
   }
   const data = await res.json();
+  // Did it actually go and look, or answer from memory? Worth knowing —
+  // a confidently wrong weather forecast usually means it never searched.
+  lastSearched = data.content.some(b =>
+    b.type === "server_tool_use" || b.type === "web_search_tool_result");
   // With web search the reply contains search blocks and possibly some
   // chatter before the answer. The JSON we want is always the last text block.
   const texts = data.content.filter(b => b.type === "text").map(b => b.text);
@@ -675,8 +799,30 @@ async function think(heard) {
 
     history.push({ role: "assistant", content: raw });
 
+    if (typeof plan.remember === "string") remember(plan.remember);
+
+    if (typeof plan.story === "string" && plan.story.trim()) {
+      setMood(plan.mood || "thinking");
+      say(plan.say || "");
+      if (plan.say) await speak(plan.say);
+      clearTimeout(slow);
+      busy = false;
+      await tellStory(plan.story.trim());
+      return;
+    }
+
+    if (typeof plan.hunt === "string" && plan.hunt.trim()) {
+      setMood(plan.mood || "excited");
+      say(plan.say || "");
+      if (plan.say) await speak(plan.say);
+      clearTimeout(slow);
+      busy = false;                       // huntFor takes over the busy flag
+      await huntFor(plan.hunt.trim());
+      return;
+    }
+
     setMood(plan.mood || "neutral");
-    say(plan.say || "");
+    say((plan.say || "") + (lastSearched ? "  \u{1F50E}" : ""));
 
     // move and talk together — a robot that waits its turn feels dead
     const driving = runMoves(plan.moves);
@@ -688,6 +834,13 @@ async function think(heard) {
       setMood(held);
     }
     await driving;
+
+    // Asked a question? Open the mic so nobody has to tap mid-quiz.
+    if (plan.then_listen === true) {
+      busy = false;
+      setTimeout(() => { if (!busy) listen(); }, 250);
+      return;
+    }
 
     setTimeout(() => {
       if (!busy && mood !== "listening") { setMood("neutral"); say("Tap the face and talk"); }
@@ -706,11 +859,183 @@ async function think(heard) {
 }
 
 /* ============================================================
+   STORY MODE — a longer piece, told in parts, with the face
+   changing as the story turns. Tap to stop at any point.
+   ============================================================ */
+let telling = false;
+
+function storyBrain() {
+  return `You are ${cfg.name}, a small robot telling a bedtime story out loud to
+${cfg.kids || "young children"}${cfg.place ? " in " + cfg.place : ""}.
+
+Tell a complete original story with a beginning, a problem and a happy ending.
+Six to ten parts. Each part is two or three sentences of plain spoken English —
+no markdown, no chapter headings, no narration of your own voice. Put the
+children in it by name as the heroes. Keep it warm and a bit silly, and never
+frightening.
+
+Reply ONLY with JSON, no other text:
+{"title": string, "parts": [{"text": string, "mood": "neutral|happy|excited|thinking|confused|sad"}]}`;
+}
+
+async function tellStory(about) {
+  telling = true; busy = true;
+  setMood("thinking"); say("Thinking of a story…");
+
+  let story;
+  try {
+    const raw = await callClaude(
+      [{ role: "user", content: "Tell a story about: " + about }],
+      storyBrain(), false, 3000);
+    story = parse(raw);
+  } catch (e) {
+    telling = false; busy = false;
+    setMood("confused"); say("Couldn't think of one — " + (e.message || e));
+    return;
+  }
+
+  const parts = Array.isArray(story.parts) ? story.parts : [];
+  if (!parts.length) {
+    telling = false; busy = false;
+    setMood("confused"); await speak("My story got muddled. Ask me again?");
+    return;
+  }
+
+  if (story.title) {
+    memory.stories.push(story.title);
+    saveMemory();
+    setMood("happy");
+    say(story.title);
+    await speak(story.title);
+    await sleep(400);
+  }
+
+  for (const part of parts) {
+    if (!telling) break;
+    setMood(part.mood || "neutral");
+    say(part.text);
+    faceEl.classList.add("talking");
+    await speak(part.text);
+    faceEl.classList.remove("talking");
+    await sleep(350);
+  }
+
+  if (telling) {
+    setMood("happy");
+    say("The end.");
+    await speak("The end.");
+  }
+  telling = false; busy = false;
+  setTimeout(() => { if (!busy) { setMood("neutral"); say("Tap the face and talk"); } }, 2000);
+}
+
+/* ============================================================
+   HUNT MODE — look, move a little, look again.
+   Not video: a still every couple of seconds, which is enough to
+   follow someone round a room or play hide and seek, and costs
+   roughly a penny a minute rather than a fortune.
+   ============================================================ */
+const HUNT_MAX = 25;          // hard stop, so a game can't run all day
+let hunting = false;
+
+const HUNT_BRAIN = `You are the eyes of a small wheeled robot playing a
+looking-for-something game with young children. You get one photo at a time
+from a camera about 20cm off the floor.
+
+Reply ONLY with JSON, no other text:
+{"see": true|false, "where": "left"|"centre"|"right", "close": true|false, "say": string}
+
+- "see": is the thing you are hunting for visible in this photo?
+- "where": which third of the picture is it in?
+- "close": does it fill a lot of the frame, i.e. within about half a metre?
+- "say": leave empty most turns. Only put a short excited line here when you
+  first spot it or when you reach it. One sentence, spoken to a small child.`;
+
+async function huntFor(target) {
+  if (cfg.cam !== "on") {
+    await speak("My camera is switched off, so I can't look for anything.");
+    return;
+  }
+  hunting = true; busy = true;
+  setMood("thinking");
+  say("Looking for " + target + "…");
+
+  let spotted = false;
+
+  for (let i = 0; i < HUNT_MAX && hunting; i++) {
+    const img = await snap();
+    if (!img) break;
+
+    let view;
+    try {
+      const raw = await callClaude([{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: img } },
+          { type: "text", text: "You are hunting for: " + target }
+        ]
+      }], HUNT_BRAIN, false);
+      view = parse(raw);
+    } catch (e) {
+      say("Lost my eyes — " + (e.message || e));
+      break;
+    }
+
+    if (!hunting) break;
+
+    if (view.see) {
+      if (!spotted) { spotted = true; setMood("excited"); }
+      if (view.close) {
+        await send("S");
+        setMood("happy");
+        say("Found it!");
+        await speak(view.say || "Found you!");
+        break;
+      }
+      if (view.where === "left")       { look(-1, 0); await hold("L", 0.35); }
+      else if (view.where === "right") { look(1, 0);  await hold("R", 0.35); }
+      else                             { look(0, -0.3); await hold("F", 0.9); }
+      if (view.say) await speak(view.say);
+    } else {
+      setMood("thinking");
+      say("Hmm… where are you?");
+      await hold("R", 0.45);                    // sweep round and look again
+      if (i > 0 && i % 8 === 0) await speak("I can't find you yet!");
+    }
+
+    await sleep(300);
+  }
+
+  await send("S");
+  if (hunting && !spotted) {
+    setMood("sad");
+    await speak("I give up! Where are you?");
+  }
+  hunting = false; busy = false; moving = false;
+  lookLocked = false; look(0, 0);
+  setTimeout(() => { if (!busy) { setMood("neutral"); say("Tap the face and talk"); } }, 2000);
+}
+
+/* ============================================================
    SETUP PANEL
    ============================================================ */
 const setupEl = document.getElementById("setup");
 const F = id => document.getElementById(id);
-document.getElementById("setupBtn").onclick = () => setupEl.classList.add("open");
+function showMemory() {
+  const el = F("memList");
+  if (!el) return;
+  el.textContent = memory.facts.length
+    ? memory.facts.length + " things remembered: " + memory.facts.slice(-5).join(" · ")
+    : "Nothing remembered yet.";
+}
+document.getElementById("setupBtn").onclick = () => {
+  fillVoiceList(); showMemory();
+  setupEl.classList.add("open");
+};
+F("forgetBtn").onclick = () => {
+  memory = { facts: [], scores: {}, stories: [] };
+  saveMemory(); showMemory();
+};
 F("doneBtn").onclick = () => {
   cfg.model = F("model").value;
   cfg.name = F("name").value.trim() || "Moby";
@@ -726,15 +1051,21 @@ F("doneBtn").onclick = () => {
   else say("Tap the face and talk");
 };
 document.querySelectorAll("#drivePad button").forEach(b => {
+  let ticker = null;
   const go = async ev => {
     ev.preventDefault();
     const ok = await send(b.dataset.m);
     F("driveMsg").textContent = ok
-      ? "Sent \"" + b.dataset.m + "\" — watch the micro:bit display for an arrow."
+      ? "Sending \"" + b.dataset.m + "\" — hold to keep going."
       : "Nothing sent. Connect the body first.";
+    clearInterval(ticker);
+    if (b.dataset.m !== "S") ticker = setInterval(() => send(b.dataset.m), 400);
   };
+  const stop = e => { e.preventDefault(); clearInterval(ticker); send("S"); };
   b.addEventListener("pointerdown", go);
-  b.addEventListener("pointerup", e => { e.preventDefault(); send("S"); });
+  b.addEventListener("pointerup", stop);
+  b.addEventListener("pointerleave", stop);
+  b.addEventListener("pointercancel", stop);
 });
 
 F("testBtn").onclick = async () => {

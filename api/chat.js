@@ -18,6 +18,7 @@ const ALLOWED_MODELS = [
 ];
 
 const MAX_TOKENS = 1200;    // web search results need headroom; the prompt keeps replies short
+const HARD_MAX  = 4000;     // stories need more, but not unlimited
 const MAX_MESSAGES = 16;     // cap the history a caller can push
 
 export default async function handler(req, res) {
@@ -59,12 +60,13 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: MAX_TOKENS,
+        max_tokens: Math.min(Number(body.max_tokens) || MAX_TOKENS, HARD_MAX),
         system: typeof body.system === "string" ? body.system : undefined,
         messages,
-        // Lets the robot answer anything that depends on today — weather,
-        // local events, share prices. Capped so one question can't run away.
-        tools: [{
+        // Web search lets him answer anything that depends on today — weather,
+        // local events, share prices. Skipped for camera calls, which never
+        // need it and are faster and cheaper without the tool attached.
+        tools: body.search === false ? undefined : [{
           type: "web_search_20250305",
           name: "web_search",
           max_uses: 3
